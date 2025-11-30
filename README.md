@@ -1,4 +1,6 @@
-有些时候管理的CloudFlare 多帐户比较多，查找某一个域名太麻烦，所以开发这个小工具，这个工具完全由AI开发~😅
+<img width="1024" height="511" alt="image" src="https://github.com/user-attachments/assets/d38f0251-34b6-4113-bbf8-f1287a1ab18f" />有些时候管理的CloudFlare 多帐户比较多，查找某一个域名太麻烦，所以开发这个小工具，这个工具完全由AI开发~😅
+<img width="1024" height="511" alt="image" src="https://github.com/user-attachments/assets/cf8ad409-c3d5-467e-9e81-d011705cb447" />
+<img width="1024" height="508" alt="image" src="https://github.com/user-attachments/assets/490ee272-c645-4569-928e-c40ce95b902f" />
 
 
 ## 使用方法
