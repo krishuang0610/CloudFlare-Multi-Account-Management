@@ -6,7 +6,9 @@
 
 
 ## 使用方法
-
+注意！！！！
+config.example.json 重命名 config.json
+注意！！！！
 ### 1. 自动加载 Account ID
 - 登录账号后，系统会自动从 Cloudflare API 获取该账号有权限访问的所有 Account ID
 - 下拉菜单会显示所有可用的 Account ID 及其名称
