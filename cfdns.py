@@ -1838,6 +1838,384 @@ class BatchEditRecordsDialog:
                   command=lambda: [result_dialog.destroy(), self.dialog.destroy()]).pack(pady=(10, 0))
 
 
+class ExportDNSRecordsDialog:
+    """导出域名解析数据对话框"""
+    def __init__(self, parent, api, zones_data):
+        self.api = api
+        self.zones_data = zones_data
+        
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("导出域名解析数据")
+        self.dialog.geometry("800x600")
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        
+        self.setup_ui()
+        
+        # 居中显示
+        center_window(self.dialog, parent)
+    
+    def setup_ui(self):
+        """设置界面"""
+        frame = ttk.Frame(self.dialog, padding="20")
+        frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 标题
+        ttk.Label(frame, text="选择要导出解析数据的域名", 
+                 font=('TkDefaultFont', 10, 'bold')).pack(anchor=tk.W, pady=(0, 10))
+        
+        # 按钮栏
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        ttk.Button(btn_frame, text="全选", command=self.select_all).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="取消全选", command=self.deselect_all).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="反选", command=self.invert_selection).pack(side=tk.LEFT, padx=2)
+        
+        # 域名列表（带复选框）
+        list_frame = ttk.Frame(frame)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        
+        # 创建Treeview
+        columns = ("domain", "status", "plan")
+        self.domain_tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=15)
+        self.domain_tree.heading("domain", text="域名")
+        self.domain_tree.heading("status", text="状态")
+        self.domain_tree.heading("plan", text="订阅类型")
+        
+        self.domain_tree.column("domain", width=300)
+        self.domain_tree.column("status", width=100)
+        self.domain_tree.column("plan", width=150)
+        
+        # 滚动条
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.domain_tree.yview)
+        self.domain_tree.configure(yscrollcommand=scrollbar.set)
+        
+        self.domain_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # 填充域名列表
+        for zone_id, zone in self.zones_data.items():
+            domain = zone.get('name', '')
+            status = zone.get('status', '')
+            plan = zone.get('plan', {}).get('name', 'Unknown')
+            self.domain_tree.insert("", tk.END, iid=zone_id, values=(domain, status, plan))
+        
+        # 允许多选
+        self.domain_tree.configure(selectmode='extended')
+        
+        # 导出选项
+        options_frame = ttk.LabelFrame(frame, text="导出选项", padding="10")
+        options_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # 导出格式选择
+        format_frame = ttk.Frame(options_frame)
+        format_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(format_frame, text="导出格式:").pack(side=tk.LEFT)
+        self.format_var = tk.StringVar(value="csv")
+        ttk.Radiobutton(format_frame, text="CSV", variable=self.format_var, 
+                       value="csv").pack(side=tk.LEFT, padx=(10, 5))
+        ttk.Radiobutton(format_frame, text="JSON", variable=self.format_var, 
+                       value="json").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(format_frame, text="TXT", variable=self.format_var, 
+                       value="txt").pack(side=tk.LEFT, padx=5)
+        
+        # 是否分文件导出
+        self.separate_files_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(options_frame, text="每个域名导出到单独的文件", 
+                       variable=self.separate_files_var).pack(anchor=tk.W, pady=5)
+        
+        # 按钮
+        bottom_btn_frame = ttk.Frame(frame)
+        bottom_btn_frame.pack(pady=(10, 0))
+        
+        ttk.Button(bottom_btn_frame, text="导出", command=self.export_records).pack(side=tk.LEFT, padx=5)
+        ttk.Button(bottom_btn_frame, text="取消", command=self.dialog.destroy).pack(side=tk.LEFT, padx=5)
+    
+    def select_all(self):
+        """全选"""
+        for item in self.domain_tree.get_children():
+            self.domain_tree.selection_add(item)
+    
+    def deselect_all(self):
+        """取消全选"""
+        self.domain_tree.selection_remove(*self.domain_tree.get_children())
+    
+    def invert_selection(self):
+        """反选"""
+        all_items = set(self.domain_tree.get_children())
+        selected = set(self.domain_tree.selection())
+        new_selection = all_items - selected
+        self.domain_tree.selection_remove(*selected)
+        self.domain_tree.selection_add(*new_selection)
+    
+    def export_records(self):
+        """导出DNS记录"""
+        selection = self.domain_tree.selection()
+        if not selection:
+            messagebox.showwarning("警告", "请至少选择一个域名")
+            return
+        
+        export_format = self.format_var.get()
+        separate_files = self.separate_files_var.get()
+        
+        from tkinter import filedialog
+        import datetime
+        import csv
+        
+        # 收集选中域名的DNS记录
+        all_records = []
+        domain_records = {}  # 按域名分组
+        
+        # 显示进度
+        progress_dialog = tk.Toplevel(self.dialog)
+        progress_dialog.title("导出中...")
+        progress_dialog.geometry("400x100")
+        progress_dialog.transient(self.dialog)
+        progress_dialog.grab_set()
+        center_window(progress_dialog, self.dialog)
+        
+        progress_frame = ttk.Frame(progress_dialog, padding="20")
+        progress_frame.pack(fill=tk.BOTH, expand=True)
+        
+        progress_label = ttk.Label(progress_frame, text="正在获取DNS记录...")
+        progress_label.pack()
+        
+        progress_bar = ttk.Progressbar(progress_frame, mode='determinate', length=300)
+        progress_bar.pack(pady=10)
+        progress_bar['maximum'] = len(selection)
+        
+        try:
+            for i, zone_id in enumerate(selection):
+                zone = self.zones_data.get(zone_id, {})
+                domain_name = zone.get('name', '')
+                
+                progress_label.config(text=f"正在获取: {domain_name}")
+                progress_bar['value'] = i + 1
+                progress_dialog.update()
+                
+                # 获取DNS记录
+                records, error = self.api.list_dns_records(zone_id)
+                
+                if error:
+                    messagebox.showwarning("警告", f"获取 {domain_name} 的DNS记录失败: {error}")
+                    continue
+                
+                if records:
+                    domain_records[domain_name] = records
+                    for record in records:
+                        record_data = {
+                            'domain': domain_name,
+                            'type': record.get('type', ''),
+                            'name': record.get('name', ''),
+                            'content': record.get('content', ''),
+                            'proxied': '是' if record.get('proxied') else '否',
+                            'ttl': record.get('ttl', ''),
+                            'priority': record.get('priority', '')
+                        }
+                        all_records.append(record_data)
+            
+            progress_dialog.destroy()
+            
+            if not all_records:
+                messagebox.showinfo("提示", "选中的域名没有DNS记录")
+                return
+            
+            # 导出到文件
+            if separate_files:
+                # 选择目录
+                directory = filedialog.askdirectory(
+                    parent=self.dialog,
+                    title="选择导出目录"
+                )
+                
+                if not directory:
+                    return
+                
+                for domain_name, records in domain_records.items():
+                    # 生成文件名（替换非法字符）
+                    safe_name = domain_name.replace('.', '_').replace('/', '_')
+                    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                    
+                    if export_format == "csv":
+                        filepath = os.path.join(directory, f"{safe_name}_{timestamp}.csv")
+                        self._export_to_csv(filepath, records, domain_name)
+                    elif export_format == "json":
+                        filepath = os.path.join(directory, f"{safe_name}_{timestamp}.json")
+                        self._export_to_json(filepath, records, domain_name)
+                    else:  # txt
+                        filepath = os.path.join(directory, f"{safe_name}_{timestamp}.txt")
+                        self._export_to_txt(filepath, records, domain_name)
+                
+                messagebox.showinfo("成功", 
+                                  f"成功导出 {len(domain_records)} 个域名的DNS记录到:\n{directory}")
+            else:
+                # 导出到单个文件
+                timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                
+                if export_format == "csv":
+                    default_filename = f"DNS记录导出_{timestamp}.csv"
+                    filetypes = [("CSV文件", "*.csv"), ("所有文件", "*.*")]
+                elif export_format == "json":
+                    default_filename = f"DNS记录导出_{timestamp}.json"
+                    filetypes = [("JSON文件", "*.json"), ("所有文件", "*.*")]
+                else:  # txt
+                    default_filename = f"DNS记录导出_{timestamp}.txt"
+                    filetypes = [("文本文件", "*.txt"), ("所有文件", "*.*")]
+                
+                filepath = filedialog.asksaveasfilename(
+                    parent=self.dialog,
+                    title="导出DNS记录",
+                    defaultextension=f".{export_format}",
+                    initialfile=default_filename,
+                    filetypes=filetypes
+                )
+                
+                if not filepath:
+                    return
+                
+                if export_format == "csv":
+                    self._export_all_to_csv(filepath, all_records)
+                elif export_format == "json":
+                    self._export_all_to_json(filepath, domain_records)
+                else:  # txt
+                    self._export_all_to_txt(filepath, domain_records)
+                
+                messagebox.showinfo("成功", 
+                                  f"成功导出 {len(all_records)} 条DNS记录到:\n{filepath}")
+            
+            self.dialog.destroy()
+            
+        except Exception as e:
+            try:
+                progress_dialog.destroy()
+            except:
+                pass
+            messagebox.showerror("错误", f"导出失败: {str(e)}")
+    
+    def _export_to_csv(self, filepath, records, domain_name):
+        """导出单个域名的记录到CSV"""
+        import csv
+        with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['域名', '类型', '名称', '内容', '代理', 'TTL', '优先级'])
+            for record in records:
+                writer.writerow([
+                    domain_name,
+                    record.get('type', ''),
+                    record.get('name', ''),
+                    record.get('content', ''),
+                    '是' if record.get('proxied') else '否',
+                    record.get('ttl', ''),
+                    record.get('priority', '')
+                ])
+    
+    def _export_to_json(self, filepath, records, domain_name):
+        """导出单个域名的记录到JSON"""
+        export_data = {
+            'domain': domain_name,
+            'export_time': __import__('datetime').datetime.now().isoformat(),
+            'records': []
+        }
+        for record in records:
+            export_data['records'].append({
+                'type': record.get('type', ''),
+                'name': record.get('name', ''),
+                'content': record.get('content', ''),
+                'proxied': record.get('proxied', False),
+                'ttl': record.get('ttl', ''),
+                'priority': record.get('priority', None)
+            })
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(export_data, f, ensure_ascii=False, indent=4)
+    
+    def _export_to_txt(self, filepath, records, domain_name):
+        """导出单个域名的记录到TXT"""
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(f"域名: {domain_name}\n")
+            f.write(f"导出时间: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("=" * 80 + "\n\n")
+            
+            for record in records:
+                f.write(f"类型: {record.get('type', '')}\n")
+                f.write(f"名称: {record.get('name', '')}\n")
+                f.write(f"内容: {record.get('content', '')}\n")
+                f.write(f"代理: {'是' if record.get('proxied') else '否'}\n")
+                f.write(f"TTL: {record.get('ttl', '')}\n")
+                if record.get('priority'):
+                    f.write(f"优先级: {record.get('priority')}\n")
+                f.write("-" * 40 + "\n")
+    
+    def _export_all_to_csv(self, filepath, all_records):
+        """导出所有记录到CSV"""
+        import csv
+        with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['域名', '类型', '名称', '内容', '代理', 'TTL', '优先级'])
+            for record in all_records:
+                writer.writerow([
+                    record['domain'],
+                    record['type'],
+                    record['name'],
+                    record['content'],
+                    record['proxied'],
+                    record['ttl'],
+                    record['priority']
+                ])
+    
+    def _export_all_to_json(self, filepath, domain_records):
+        """导出所有记录到JSON"""
+        export_data = {
+            'export_time': __import__('datetime').datetime.now().isoformat(),
+            'domains': []
+        }
+        
+        for domain_name, records in domain_records.items():
+            domain_data = {
+                'domain': domain_name,
+                'records': []
+            }
+            for record in records:
+                domain_data['records'].append({
+                    'type': record.get('type', ''),
+                    'name': record.get('name', ''),
+                    'content': record.get('content', ''),
+                    'proxied': record.get('proxied', False),
+                    'ttl': record.get('ttl', ''),
+                    'priority': record.get('priority', None)
+                })
+            export_data['domains'].append(domain_data)
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(export_data, f, ensure_ascii=False, indent=4)
+    
+    def _export_all_to_txt(self, filepath, domain_records):
+        """导出所有记录到TXT"""
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(f"DNS记录导出\n")
+            f.write(f"导出时间: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"共 {len(domain_records)} 个域名\n")
+            f.write("=" * 80 + "\n\n")
+            
+            for domain_name, records in domain_records.items():
+                f.write(f"\n{'#' * 80}\n")
+                f.write(f"域名: {domain_name}\n")
+                f.write(f"记录数: {len(records)}\n")
+                f.write("#" * 80 + "\n\n")
+                
+                for record in records:
+                    f.write(f"类型: {record.get('type', '')}\n")
+                    f.write(f"名称: {record.get('name', '')}\n")
+                    f.write(f"内容: {record.get('content', '')}\n")
+                    f.write(f"代理: {'是' if record.get('proxied') else '否'}\n")
+                    f.write(f"TTL: {record.get('ttl', '')}\n")
+                    if record.get('priority'):
+                        f.write(f"优先级: {record.get('priority')}\n")
+                    f.write("-" * 40 + "\n")
+
+
 class PendingDomainsDialog:
     """Pending状态域名列表对话框"""
     def __init__(self, parent, pending_domains):
@@ -2020,13 +2398,16 @@ class MainWindow:
         ttk.Button(domain_btn_frame, text="删除域名", command=self.delete_domain).pack(side=tk.LEFT, padx=2)
         ttk.Button(domain_btn_frame, text="Pending列表", command=self.show_pending_domains).pack(side=tk.LEFT, padx=2)
         ttk.Button(domain_btn_frame, text="导出域名", command=self.export_domains).pack(side=tk.LEFT, padx=2)
+        ttk.Button(domain_btn_frame, text="导出解析", command=self.show_export_dns_records_dialog).pack(side=tk.LEFT, padx=2)
         
         # 域名列表
-        self.domain_tree = ttk.Treeview(left_frame, columns=("domain", "status"), show="headings", height=15)
+        self.domain_tree = ttk.Treeview(left_frame, columns=("domain", "status", "plan"), show="headings", height=15)
         self.domain_tree.heading("domain", text="域名", command=lambda: self.sort_domains("domain"))
         self.domain_tree.heading("status", text="状态", command=lambda: self.sort_domains("status"))
-        self.domain_tree.column("domain", width=250, minwidth=150, stretch=True)
-        self.domain_tree.column("status", width=80, minwidth=60, stretch=False)
+        self.domain_tree.heading("plan", text="订阅类型", command=lambda: self.sort_domains("plan"))
+        self.domain_tree.column("domain", width=200, minwidth=150, stretch=True)
+        self.domain_tree.column("status", width=70, minwidth=60, stretch=False)
+        self.domain_tree.column("plan", width=80, minwidth=70, stretch=False)
         self.domain_tree.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         self.domain_tree.bind("<<TreeviewSelect>>", self.on_domain_select)
         
@@ -2260,9 +2641,11 @@ class MainWindow:
                 zone_id = zone['id']
                 domain = zone['name']
                 status = zone['status']
+                # 获取订阅类型
+                plan = zone.get('plan', {}).get('name', 'Unknown')
                 
                 self.zones_data[zone_id] = zone
-                self.domain_tree.insert("", tk.END, iid=zone_id, values=(domain, status))
+                self.domain_tree.insert("", tk.END, iid=zone_id, values=(domain, status, plan))
             
             # 显示统计信息
             self.root.title(f"Cloudflare DNS 域名管理工具 - 多账号版 ({len(zones)} 个域名)")
@@ -2294,6 +2677,13 @@ class MainWindow:
                 key=lambda x: (status_priority.get(x[1][1], 2), x[1][1].lower()),
                 reverse=self.sort_reverse
             )
+        elif column == "plan":
+            # 订阅类型排序：Free -> Pro -> Business -> Enterprise -> 其他
+            plan_priority = {"Free": 0, "Pro": 1, "Business": 2, "Enterprise": 3}
+            items.sort(
+                key=lambda x: (plan_priority.get(x[1][2], 4), str(x[1][2]).lower()),
+                reverse=self.sort_reverse
+            )
         
         # 重新插入项目
         for index, (item_id, values) in enumerate(items):
@@ -2304,9 +2694,15 @@ class MainWindow:
         if column == "domain":
             self.domain_tree.heading("domain", text=f"域名{arrow}")
             self.domain_tree.heading("status", text="状态")
-        else:
+            self.domain_tree.heading("plan", text="订阅类型")
+        elif column == "status":
             self.domain_tree.heading("domain", text="域名")
             self.domain_tree.heading("status", text=f"状态{arrow}")
+            self.domain_tree.heading("plan", text="订阅类型")
+        else:
+            self.domain_tree.heading("domain", text="域名")
+            self.domain_tree.heading("status", text="状态")
+            self.domain_tree.heading("plan", text=f"订阅类型{arrow}")
     
     def show_pending_domains(self):
         """显示所有pending状态的域名"""
@@ -2341,7 +2737,7 @@ class MainWindow:
         PendingDomainsDialog(self.root, pending_domains)
     
     def export_domains(self):
-        """导出所有域名到文本文件"""
+        """导出所有域名到CSV文件"""
         if not self.zones_data:
             messagebox.showwarning("警告", "当前没有域名可以导出")
             return
@@ -2349,17 +2745,18 @@ class MainWindow:
         # 从文件对话框获取保存路径
         from tkinter import filedialog
         import datetime
+        import csv
         
-        # 默认文件名：域名列表_日期时间.txt
-        default_filename = f"域名列表_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        # 默认文件名：域名列表_日期时间.csv
+        default_filename = f"域名列表_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
         filepath = filedialog.asksaveasfilename(
             parent=self.root,
             title="导出域名列表",
-            defaultextension=".txt",
+            defaultextension=".csv",
             initialfile=default_filename,
             filetypes=[
-                ("文本文件", "*.txt"),
+                ("CSV文件", "*.csv"),
                 ("所有文件", "*.*")
             ]
         )
@@ -2368,26 +2765,52 @@ class MainWindow:
             return  # 用户取消
         
         try:
-            # 收集所有域名
-            domains = []
+            # 收集所有域名信息
+            domains_info = []
             for zone_id, zone in self.zones_data.items():
                 domain_name = zone.get('name')
                 if domain_name:
-                    domains.append(domain_name)
+                    status = zone.get('status', '')
+                    plan = zone.get('plan', {}).get('name', 'Unknown')
+                    # 获取账号名称
+                    account_name = zone.get('account', {}).get('name', 'Unknown')
+                    domains_info.append({
+                        'domain': domain_name,
+                        'status': status,
+                        'plan': plan,
+                        'account': account_name
+                    })
             
-            # 排序
-            domains.sort()
+            # 按域名排序
+            domains_info.sort(key=lambda x: x['domain'])
             
-            # 写入文件
-            with open(filepath, 'w', encoding='utf-8') as f:
-                for domain in domains:
-                    f.write(domain + '\n')
+            # 写入CSV文件
+            with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
+                writer = csv.writer(f)
+                # 写入表头
+                writer.writerow(['域名', '状态', '订阅类型', '归属账号'])
+                # 写入数据
+                for info in domains_info:
+                    writer.writerow([info['domain'], info['status'], info['plan'], info['account']])
             
             messagebox.showinfo("成功", 
-                              f"成功导出 {len(domains)} 个域名到:\n{filepath}")
+                              f"成功导出 {len(domains_info)} 个域名到:\n{filepath}")
         
         except Exception as e:
             messagebox.showerror("错误", f"导出失败: {str(e)}")
+    
+    def show_export_dns_records_dialog(self):
+        """显示导出域名解析数据对话框"""
+        if not self.api:
+            messagebox.showwarning("警告", "请先配置账号")
+            return
+        
+        if not self.zones_data:
+            messagebox.showwarning("警告", "当前没有域名可以导出")
+            return
+        
+        dialog = ExportDNSRecordsDialog(self.root, self.api, self.zones_data)
+        self.root.wait_window(dialog.dialog)
     
     def on_domain_select(self, event):
         """域名选择事件"""
